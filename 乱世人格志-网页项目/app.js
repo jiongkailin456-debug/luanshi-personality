@@ -87,51 +87,120 @@ const FIGURES = [
 ];
 
 const STORAGE_KEY = 'luanshi-personality-v1';
+const HISTORY_MARK = 'luanshi-personality-route-v2';
 const screenEls = {
   home: document.getElementById('home-screen'),
   quiz: document.getElementById('quiz-screen'),
   result: document.getElementById('result-screen')
 };
-const state = { answers: Array(QUESTIONS.length).fill(null), currentIndex: 0, result: null, locked: false };
+const state = { answers: Array(QUESTIONS.length).fill(null), currentIndex: 0, result: null, testCompleted: false, locked: false };
+let activeScreen = 'home';
+let transitionTimers = [];
+let entranceTimer = null;
+
+function clearTransitionTimers() {
+  transitionTimers.forEach(window.clearTimeout);
+  transitionTimers = [];
+  if (entranceTimer !== null) window.clearTimeout(entranceTimer);
+  entranceTimer = null;
+}
+function afterDelay(callback, delay) {
+  const timer = window.setTimeout(() => {
+    transitionTimers = transitionTimers.filter(id => id !== timer);
+    callback();
+  }, delay);
+  transitionTimers.push(timer);
+}
+function resetTransientVisualState() {
+  clearTransitionTimers();
+  const targets = [document.body, document.querySelector('.page-shell'), document.getElementById('question-card'), ...Object.values(screenEls)];
+  targets.forEach(el => {
+    if (!el) return;
+    el.classList.remove('fade-out', 'fade-in', 'is-leaving', 'transitioning', 'is-changing', 'is-entering', 'hidden');
+    el.style.removeProperty('opacity');
+    el.style.removeProperty('transform');
+    el.style.removeProperty('pointer-events');
+    el.style.removeProperty('animation');
+  });
+  state.locked = false;
+}
+function routeState(screen) { return { [HISTORY_MARK]: true, screen }; }
+function currentRoute() { return history.state?.[HISTORY_MARK] ? history.state.screen : null; }
+function writeRoute(screen, mode) {
+  try {
+    if (mode === 'push' && currentRoute() !== screen) history.pushState(routeState(screen), '');
+    else if (mode === 'replace') history.replaceState(routeState(screen), '');
+  } catch (_) { /* 某些内置浏览器限制 file: 历史记录，页面本身仍可使用。 */ }
+}
+function navigate(screen, mode = 'push') {
+  writeRoute(screen, mode);
+  showScreen(screen);
+}
 
 function readSaved() {
+  state.answers = Array(QUESTIONS.length).fill(null);
+  state.currentIndex = 0;
+  state.result = null;
+  state.testCompleted = false;
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
     if (!saved || !Array.isArray(saved.answers)) return;
     state.answers = Array.from({ length: QUESTIONS.length }, (_, i) =>
       Number.isInteger(saved.answers[i]) && saved.answers[i] >= 0 && saved.answers[i] < 4 ? saved.answers[i] : null
     );
-    state.currentIndex = Math.min(QUESTIONS.length - 1, Math.max(0, Number(saved.currentIndex) || 0));
-    // 持久化结果只作完成标记；每次仍由已保存答案重新计算。
-    if (saved.result && state.answers.every(answer => answer !== null)) state.result = calculateResult(state.answers);
+    const savedIndex = Number.isInteger(saved.currentQuestion) ? saved.currentQuestion : saved.currentIndex;
+    state.currentIndex = Math.min(QUESTIONS.length - 1, Math.max(0, Number(savedIndex) || 0));
+    // 兼容旧版只保存 {complete:true} 的结果；完整答案始终重新计算，避免旧参数产生不一致。
+    if ((saved.testCompleted === true || saved.result) && state.answers.every(answer => answer !== null)) {
+      state.result = calculateResult(state.answers);
+      state.testCompleted = true;
+      state.currentIndex = QUESTIONS.length - 1;
+    }
   } catch (_) { /* 私密浏览或损坏的缓存不会阻断测试。 */ }
 }
 function saveState() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ answers: state.answers, currentIndex: state.currentIndex, result: state.result ? { complete: true } : null }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      answers: state.answers,
+      currentIndex: state.currentIndex,
+      currentQuestion: state.currentIndex,
+      testCompleted: state.testCompleted,
+      result: state.result,
+      scores: state.result?.scores || null,
+      matchedCharacter: state.result?.figures[0]?.name || null
+    }));
   } catch (_) { /* 禁用 localStorage 时仍可完成当前测试。 */ }
 }
-function showScreen(name) {
+function showScreen(name, animate = true) {
+  resetTransientVisualState();
   Object.entries(screenEls).forEach(([key, el]) => { el.hidden = key !== name; });
-  screenEls[name].style.animation = 'none';
-  void screenEls[name].offsetWidth;
-  screenEls[name].style.animation = '';
-  window.scrollTo({ top: 0, behavior: 'instant' });
+  activeScreen = name;
+  if (animate) {
+    screenEls[name].classList.add('is-entering');
+    entranceTimer = window.setTimeout(() => {
+      screenEls[name].classList.remove('is-entering');
+      entranceTimer = null;
+    }, 450);
+  }
+  window.scrollTo({ top: 0, behavior: 'auto' });
   updateHomeLinks();
 }
 function updateHomeLinks() {
-  const hasProgress = state.answers.some(answer => answer !== null) && !state.result;
+  const hasProgress = state.answers.some(answer => answer !== null) && !state.testCompleted;
   document.getElementById('resume-button').hidden = !hasProgress;
-  document.getElementById('saved-result-button').hidden = !state.result;
+  document.getElementById('saved-result-button').hidden = !state.testCompleted;
+  document.getElementById('start-button').firstChild.textContent = hasProgress || state.testCompleted ? '重新测试 ' : '开始测试 ';
 }
 function startNew() {
+  resetTransientVisualState();
   state.answers = Array(QUESTIONS.length).fill(null);
   state.currentIndex = 0;
   state.result = null;
+  state.testCompleted = false;
   state.locked = false;
   saveState();
   renderQuestion();
-  showScreen('quiz');
+  navigate('quiz', activeScreen === 'home' ? 'push' : 'replace');
 }
 function renderQuestion() {
   const index = state.currentIndex;
@@ -166,29 +235,34 @@ function renderQuestion() {
 function chooseAnswer(optionIndex) {
   if (state.locked) return;
   state.locked = true;
+  const answeredIndex = state.currentIndex;
   state.result = null;
-  state.answers[state.currentIndex] = optionIndex;
+  state.testCompleted = false;
+  state.answers[answeredIndex] = optionIndex;
+  if (answeredIndex === QUESTIONS.length - 1) {
+    state.result = calculateResult(state.answers);
+    state.testCompleted = true;
+  } else {
+    // 在过渡开始前保存下一题；BFCache 即使冻结计时器也不会恢复到旧题。
+    state.currentIndex = answeredIndex + 1;
+  }
   saveState();
   document.querySelectorAll('.answer-option').forEach((button, i) => {
     button.classList.toggle('selected', i === optionIndex);
     button.setAttribute('aria-pressed', i === optionIndex ? 'true' : 'false');
   });
   const card = document.getElementById('question-card');
-  window.setTimeout(() => {
+  afterDelay(() => {
     card.classList.add('is-changing');
-    window.setTimeout(() => {
-      if (state.currentIndex === QUESTIONS.length - 1) {
-        state.result = calculateResult(state.answers);
-        saveState();
+    afterDelay(() => {
+      card.classList.remove('is-changing');
+      if (state.testCompleted) {
         renderResult();
-        showScreen('result');
+        navigate('result', 'replace');
       } else {
-        state.currentIndex++;
-        saveState();
         renderQuestion();
-        card.classList.remove('is-changing');
+        state.locked = false;
       }
-      state.locked = false;
     }, 120);
   }, 170);
 }
@@ -280,13 +354,22 @@ function renderResult() {
     <section class="result-section"><h2><span class="section-num">04</span>现实中的你</h2><div class="reality-grid">${blocks(reality)}</div></section>
     <section class="result-section"><h2><span class="section-num">05</span>性格盲点与风险提醒</h2><div class="risk-grid">${blocks(risks)}</div></section>
     <section class="result-section"><h2><span class="section-num">06</span>与你相近的另外三位人物</h2><div class="figure-list">${others}</div></section>
-    <div class="result-actions"><button class="button button-primary button-wide" id="share-button" type="button">生成分享卡 <span aria-hidden="true">↗</span></button><button class="button button-secondary button-wide" id="restart-button" type="button">重新测试</button><div class="result-small-actions"><button class="text-button" id="result-home" type="button">回到首页</button><button class="text-button" id="review-button" type="button">回看答案</button></div></div>
+    <div class="result-actions"><button class="button button-primary button-wide" id="share-button" type="button">生成分享卡 <span aria-hidden="true">↗</span></button><button class="button button-secondary button-wide" id="restart-button" type="button">重新测试</button><div class="result-small-actions"><button class="text-button" id="result-home" type="button">回到首页</button><button class="text-button" id="review-button" type="button" aria-expanded="false" aria-controls="answer-review">回看答案</button></div></div>
+    <div id="answer-review" class="answer-review" hidden></div>
     <div id="share-panel" class="share-panel" hidden></div>
     <p class="disclaimer result-note">本测试仅供娱乐与自我观察，不属于专业心理评估。人物八维值是本测试内部的叙事参数，不是真实历史人物的心理测量数据；匹配度仅表示原型类比。</p>`;
-  document.getElementById('result-home-top').addEventListener('click', () => showScreen('home'));
-  document.getElementById('result-home').addEventListener('click', () => showScreen('home'));
+  document.getElementById('result-home-top').addEventListener('click', goHome);
+  document.getElementById('result-home').addEventListener('click', goHome);
   document.getElementById('restart-button').addEventListener('click', startNew);
-  document.getElementById('review-button').addEventListener('click', () => { state.currentIndex = 0; renderQuestion(); showScreen('quiz'); });
+  document.getElementById('review-button').addEventListener('click', () => {
+    const panel = document.getElementById('answer-review');
+    panel.hidden = !panel.hidden;
+    document.getElementById('review-button').setAttribute('aria-expanded', String(!panel.hidden));
+    if (!panel.hidden) {
+      panel.innerHTML = `<h2>你的 20 次选择</h2>${QUESTIONS.map((question, i) => `<div class="review-item"><strong>${String(i + 1).padStart(2, '0')} · ${escapeHtml(question.category)}</strong><p>${escapeHtml(question.title)}</p><span>${'ABCD'[state.answers[i]]} · ${escapeHtml(question.options[state.answers[i]].text)}</span></div>`).join('')}`;
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
   document.getElementById('share-button').addEventListener('click', () => renderShareCard(data));
   animateNumbers();
   requestAnimationFrame(() => document.querySelectorAll('.dim-fill').forEach(el => { el.style.width = `${el.dataset.width}%`; }));
@@ -325,11 +408,40 @@ function renderShareCard(data) {
   panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-document.getElementById('brand-home').addEventListener('click', () => { if (!state.locked) showScreen('home'); });
+function goHome() {
+  if (state.locked) return;
+  if (currentRoute() !== 'home' && history.length > 1) history.back();
+  else navigate('home', 'replace');
+}
+function restoreVisibleRoute(route) {
+  if (route === 'home') { showScreen('home', false); return; }
+  if (state.testCompleted) {
+    if (route !== 'result') writeRoute('result', 'replace');
+    renderResult();
+    showScreen('result', false);
+  } else if (state.answers.some(answer => answer !== null) || route === 'quiz') {
+    if (route !== 'quiz') writeRoute('quiz', 'replace');
+    renderQuestion();
+    showScreen('quiz', false);
+  } else {
+    if (route !== 'home') writeRoute('home', 'replace');
+    showScreen('home', false);
+  }
+}
+function initializeRoute() {
+  const target = state.testCompleted ? 'result' : state.answers.some(answer => answer !== null) ? 'quiz' : 'home';
+  const route = currentRoute();
+  if (!route) writeRoute('home', 'replace');
+  if (target !== 'home') writeRoute(target, route && route !== 'home' ? 'replace' : 'push');
+  else if (route && route !== 'home') writeRoute('home', 'replace');
+  restoreVisibleRoute(target);
+}
+
+document.getElementById('brand-home').addEventListener('click', goHome);
 document.getElementById('start-button').addEventListener('click', startNew);
-document.getElementById('resume-button').addEventListener('click', () => { renderQuestion(); showScreen('quiz'); });
-document.getElementById('saved-result-button').addEventListener('click', () => { renderResult(); showScreen('result'); });
-document.getElementById('quiz-home-button').addEventListener('click', () => { if (!state.locked) showScreen('home'); });
+document.getElementById('resume-button').addEventListener('click', () => { renderQuestion(); navigate('quiz'); });
+document.getElementById('saved-result-button').addEventListener('click', () => { renderResult(); navigate('result'); });
+document.getElementById('quiz-home-button').addEventListener('click', goHome);
 document.getElementById('previous-button').addEventListener('click', () => {
   if (state.locked || state.currentIndex === 0) return;
   state.currentIndex--;
@@ -337,6 +449,16 @@ document.getElementById('previous-button').addEventListener('click', () => {
   renderQuestion();
 });
 readSaved();
-if (state.result) { renderResult(); showScreen('result'); }
-else if (state.answers.some(answer => answer !== null)) { renderQuestion(); showScreen('quiz'); }
-else showScreen('home');
+initializeRoute();
+window.addEventListener('popstate', event => {
+  resetTransientVisualState();
+  restoreVisibleRoute(event.state?.[HISTORY_MARK] ? event.state.screen : 'home');
+});
+window.addEventListener('pagehide', resetTransientVisualState);
+window.addEventListener('pageshow', event => {
+  // BFCache 可保留 DOM、计时器与动画中间帧，先清理再按已保存的完成状态恢复。
+  resetTransientVisualState();
+  if (!event.persisted) return;
+  try { if (localStorage.getItem(STORAGE_KEY)) readSaved(); } catch (_) { /* 继续使用内存状态。 */ }
+  restoreVisibleRoute(currentRoute() || (state.testCompleted ? 'result' : 'home'));
+});
