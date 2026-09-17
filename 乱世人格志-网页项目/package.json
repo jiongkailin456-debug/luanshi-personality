@@ -1,0 +1,9 @@
+{
+  "name": "luanshi-personality",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node dev-server.mjs",
+    "build": "node build.mjs"
+  }
+}
