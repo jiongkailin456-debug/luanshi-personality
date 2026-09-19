@@ -1,12 +1,12 @@
 /* 早期 MVP：验证码列表随静态网页发布，购买资格只保存在本浏览器。 */
-const ACCESS_VERIFIED_KEY = 'accessVerified';
-const ACCESS_CODE_KEY = 'accessCode';
+const ACCESS_VERIFIED_KEY = 'testAccessVerified';
+const ACCESS_CODE_KEY = 'testAccessCode';
 const accessScreen = document.getElementById('access-screen');
 const accessStatus = document.getElementById('access-status');
 const accessForm = document.getElementById('access-form');
 const accessInput = document.getElementById('access-code');
 const siteShell = document.querySelector('.page-shell');
-const validAccessCodes = new Set(VALID_ACCESS_CODES);
+const validAccessCodes = new Set(TEST_ACCESS_CODES);
 let activeCode = null;
 let justActivated = false;
 let resolveReady;
@@ -33,7 +33,16 @@ function showSite(code) {
 }
 function restoreAccess() {
   try {
-    const code = localStorage.getItem(ACCESS_CODE_KEY);
+    let code = localStorage.getItem(ACCESS_CODE_KEY);
+    // 保留已购买旧版测试资格的用户，不把旧访问标记当作档案解锁资格。
+    if (!code && localStorage.getItem('accessVerified') === 'true') {
+      const oldCode = localStorage.getItem('accessCode');
+      if (validAccessCodes.has(oldCode)) {
+        code = oldCode;
+        localStorage.setItem(ACCESS_VERIFIED_KEY, 'true');
+        localStorage.setItem(ACCESS_CODE_KEY, code);
+      }
+    }
     if (localStorage.getItem(ACCESS_VERIFIED_KEY) === 'true' && validAccessCodes.has(code)) {
       showSite(code);
       return;

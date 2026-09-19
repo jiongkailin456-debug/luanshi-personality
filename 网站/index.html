@@ -15,7 +15,8 @@
   <link rel="stylesheet" href="./style.css">
   <script defer src="./payment.js"></script>
   <script defer src="./result-code.js"></script>
-  <script defer src="./access-codes.js"></script>
+  <script defer src="./test-access-codes.js"></script>
+  <script defer src="./premium-access-codes.js"></script>
   <script defer src="./access.js"></script>
   <script defer src="./app.js"></script>
 </head>
@@ -23,16 +24,16 @@
   <section id="access-screen" class="access-screen" aria-labelledby="access-title">
     <div class="access-card">
       <div class="access-mark" aria-hidden="true">志</div>
-      <p class="access-eyebrow">一单一码 · 见其人</p>
+      <p class="access-eyebrow">¥0.5 测试资格 · 二十问见其人</p>
       <h1 id="access-title">乱世人格志</h1>
-      <p class="access-lead">请输入购买后获得的验证码</p>
+      <p class="access-lead">输入购买后获得的6位测试验证码</p>
       <form id="access-form" autocomplete="off">
-        <label for="access-code">6 位数字验证码</label>
+        <label for="access-code">6 位测试验证码</label>
         <input id="access-code" name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="请输入 6 位数字" required>
         <button id="access-submit" class="button button-primary button-wide" type="submit">验证并开始测试</button>
       </form>
       <p id="access-status" class="access-status" role="status" aria-live="polite"></p>
-      <p class="access-help">验证码可在小红书订单的自动发货信息中查看。</p>
+      <p class="access-help">测试验证码可在小红书「乱世人格志测试资格」订单的自动发货信息中查看。</p>
       <noscript><p class="access-status">请开启 JavaScript 后刷新页面。</p></noscript>
     </div>
   </section>
@@ -81,6 +82,21 @@
       </section>
     </main>
     <footer class="site-footer">乱世人格志 <span>·</span> 一场关于选择的想象</footer>
+  </div>
+  <div id="premium-unlock-dialog" class="unlock-overlay" role="dialog" aria-modal="true" aria-labelledby="premium-unlock-title" hidden>
+    <button class="unlock-backdrop" id="premium-unlock-backdrop" type="button" aria-label="关闭解锁窗口"></button>
+    <div class="unlock-card">
+      <button class="unlock-close" id="premium-unlock-close" type="button" aria-label="关闭">×</button>
+      <p class="premium-heading">第二层 · 完整人格档案</p>
+      <h2 id="premium-unlock-title">完整人格档案解锁</h2>
+      <p>输入购买后获得的6位档案解锁码</p>
+      <form id="premium-unlock-form" autocomplete="off">
+        <label for="premium-unlock-code">6 位档案解锁码</label>
+        <input id="premium-unlock-code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="请输入 6 位数字" required>
+        <button class="button button-primary button-wide" type="submit">解锁完整档案</button>
+      </form>
+      <p id="premium-unlock-status" class="unlock-status" role="status" aria-live="polite"></p>
+    </div>
   </div>
   <script>
     window.setTimeout(function () {

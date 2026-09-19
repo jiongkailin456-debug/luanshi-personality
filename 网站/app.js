@@ -87,6 +87,7 @@ const FIGURES = [
 ];
 
 const STORAGE_KEY = 'luanshi-personality-v1';
+const PREMIUM_UNLOCKS_KEY = 'luanshi-premium-unlocks-v1';
 const HISTORY_MARK = 'luanshi-personality-route-v2';
 const screenEls = {
   home: document.getElementById('home-screen'),
@@ -95,7 +96,8 @@ const screenEls = {
 };
 const state = {
   answers: Array(QUESTIONS.length).fill(null), currentIndex: 0, result: null,
-  testCompleted: false, locked: false, completedAt: null, resultCode: null
+  testCompleted: false, locked: false, completedAt: null, resultCode: null,
+  resultId: null, premiumUnlocked: false
 };
 let activeScreen = 'home';
 let transitionTimers = [];
@@ -116,6 +118,9 @@ function afterDelay(callback, delay) {
 }
 function resetTransientVisualState() {
   clearTransitionTimers();
+  const unlockDialog = document.getElementById('premium-unlock-dialog');
+  if (unlockDialog) unlockDialog.hidden = true;
+  document.body.classList.remove('modal-open');
   const targets = [document.body, document.querySelector('.page-shell'), document.getElementById('question-card'), ...Object.values(screenEls)];
   targets.forEach(el => {
     if (!el) return;
@@ -140,6 +145,17 @@ function navigate(screen, mode = 'push') {
   showScreen(screen);
 }
 
+function makeResultId() {
+  if (globalThis.crypto?.randomUUID) return `R-${crypto.randomUUID()}`;
+  return `R-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+function readPremiumUnlocks() {
+  try {
+    const value = JSON.parse(localStorage.getItem(PREMIUM_UNLOCKS_KEY) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
+}
+
 function readSaved() {
   state.answers = Array(QUESTIONS.length).fill(null);
   state.currentIndex = 0;
@@ -147,6 +163,8 @@ function readSaved() {
   state.testCompleted = false;
   state.completedAt = null;
   state.resultCode = null;
+  state.resultId = null;
+  state.premiumUnlocked = false;
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
     if (!saved || !Array.isArray(saved.answers)) return;
@@ -162,13 +180,15 @@ function readSaved() {
       state.testCompleted = true;
       state.currentIndex = QUESTIONS.length - 1;
       state.completedAt = typeof saved.completedAt === 'string' && !Number.isNaN(Date.parse(saved.completedAt)) ? saved.completedAt : new Date().toISOString();
+      // 旧版曾把 LS1 明文保存在本机；读取后重写状态，未解锁前不再保存结果码。
       const decoded = ResultCode.decode(saved.resultCode);
-      const matchesResult = decoded.ok && decoded.data.personalityType === state.result.archetype.id &&
-        ResultCode.keys.every((key, index) => decoded.data.scores[key] === state.result.scores[index]) &&
-        decoded.data.matchedCharacters.every((item, index) => item.name === state.result.figures[index].name && item.match === state.result.figures[index].match);
-      if (matchesResult) state.completedAt = decoded.data.createdAt;
-      state.resultCode = matchesResult ? decoded.code : ResultCode.encode(state.result, state.completedAt);
-      if (!matchesResult) saveState();
+      if (decoded.ok) state.completedAt = decoded.data.createdAt;
+      state.resultId = typeof saved.resultId === 'string' && /^R-[a-z0-9-]{8,64}$/i.test(saved.resultId)
+        ? saved.resultId : makeResultId();
+      state.premiumUnlocked = readPremiumUnlocks()[state.resultId] === true;
+      saveState();
+    } else {
+      localStorage.setItem('premiumUnlocked', 'false');
     }
   } catch (_) { /* 私密浏览或损坏的缓存不会阻断测试。 */ }
 }
@@ -180,12 +200,14 @@ function saveState() {
       currentQuestion: state.currentIndex,
       testCompleted: state.testCompleted,
       completedAt: state.completedAt,
-      resultCode: state.resultCode,
+      resultId: state.resultId,
+      premiumUnlocked: state.premiumUnlocked,
       accessCode: AccessGate.getCode(),
       result: state.result,
       scores: state.result?.scores || null,
       matchedCharacter: state.result?.figures[0]?.name || null
     }));
+    localStorage.setItem('premiumUnlocked', String(state.premiumUnlocked));
   } catch (_) { /* 禁用 localStorage 时仍可完成当前测试。 */ }
 }
 function showScreen(name, animate = true) {
@@ -216,6 +238,8 @@ function startNew() {
   state.testCompleted = false;
   state.completedAt = null;
   state.resultCode = null;
+  state.resultId = null;
+  state.premiumUnlocked = false;
   state.locked = false;
   saveState();
   renderQuestion();
@@ -262,7 +286,9 @@ function chooseAnswer(optionIndex) {
     state.result = calculateResult(state.answers);
     state.testCompleted = true;
     state.completedAt = new Date().toISOString();
-    state.resultCode = ResultCode.encode(state.result, state.completedAt);
+    state.resultCode = null;
+    state.resultId = makeResultId();
+    state.premiumUnlocked = false;
   } else {
     // 在过渡开始前保存下一题；BFCache 即使冻结计时器也不会恢复到旧题。
     state.currentIndex = answeredIndex + 1;
@@ -333,13 +359,59 @@ function snapshot(result) {
   const portrait = `你和${figure.name}相似的，并不是具体经历，而是面对复杂局面时偏向的选择。${archetype.lead}${high.name}是你较鲜明的底色：${high.gift}${second.name}则让这种倾向更有层次。你也许不总能立刻说出自己要成为什么人，但在一次次取舍里，你正在写下属于自己的行事方式。`;
   return { scores, top, archetype, figures, figure, high, second, third, low, portrait };
 }
+function basicAnalysis({ archetype, figure, high, second }) {
+  return `你在纷乱中更像${archetype.id}。${archetype.lead}${high.name}是你的鲜明底色，${second.name}让判断更有层次。与${figure.name}相似的不是经历，而是面对变化时的取舍方式。${archetype.cost}这份倾向也提醒你留意自己的节奏。`;
+}
+function isPremiumUnlocked() {
+  return Boolean(state.testCompleted && state.resultId && state.premiumUnlocked && readPremiumUnlocks()[state.resultId] === true);
+}
+function openUnlockDialog() {
+  const dialog = document.getElementById('premium-unlock-dialog');
+  document.getElementById('premium-unlock-status').textContent = '';
+  document.getElementById('premium-unlock-code').value = '';
+  dialog.hidden = false;
+  document.body.classList.add('modal-open');
+  document.getElementById('premium-unlock-code').focus();
+}
+function closeUnlockDialog() {
+  document.getElementById('premium-unlock-dialog').hidden = true;
+  document.body.classList.remove('modal-open');
+}
+function unlockPremium(event) {
+  event.preventDefault();
+  const code = document.getElementById('premium-unlock-code').value.trim();
+  const status = document.getElementById('premium-unlock-status');
+  if (!/^\d{6}$/.test(code) || !PREMIUM_ACCESS_CODES.includes(code)) {
+    status.textContent = '档案解锁码无效，请检查小红书订单中的发货信息。';
+    return;
+  }
+  if (!state.testCompleted || !state.resultId) {
+    status.textContent = '请先完成测试，再解锁档案。';
+    return;
+  }
+  try {
+    const unlocks = readPremiumUnlocks();
+    unlocks[state.resultId] = true;
+    localStorage.setItem(PREMIUM_UNLOCKS_KEY, JSON.stringify(unlocks));
+  } catch {
+    status.textContent = '浏览器无法保存解锁状态，请允许本地存储后重试。';
+    return;
+  }
+  state.premiumUnlocked = true;
+  saveState();
+  closeUnlockDialog();
+  renderResult();
+  document.getElementById('premium-area').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
 async function copyResultCode() {
+  if (!isPremiumUnlocked()) return;
   const field = document.getElementById('result-code-value');
+  if (!field) return;
   const status = document.getElementById('result-code-status');
   if (navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(field.value);
-      status.textContent = '结果码已复制';
+      status.textContent = '✓ 已复制，请发送给小红书客服';
       return;
     } catch (_) { /* 内置浏览器可能拒绝 Clipboard API，继续尝试选中文本。 */ }
   }
@@ -348,7 +420,7 @@ async function copyResultCode() {
   field.setSelectionRange(0, field.value.length);
   try {
     if (document.execCommand?.('copy')) {
-      status.textContent = '结果码已复制';
+      status.textContent = '✓ 已复制，请发送给小红书客服';
       return;
     }
   } catch (_) { /* 保持选中状态供手动复制。 */ }
@@ -357,12 +429,33 @@ async function copyResultCode() {
 
 function renderResult() {
   const data = snapshot(state.result);
-  const { scores, top, archetype, figure, portrait } = data;
-  const resultCode = state.resultCode || ResultCode.encode(state.result, state.completedAt || new Date().toISOString());
+  const { scores, top, archetype, figure } = data;
+  const unlocked = isPremiumUnlocked();
+  // 未解锁时不生成结果码，也不把它放进 textarea、隐藏元素或页面 HTML。
+  state.resultCode = unlocked ? ResultCode.encode(state.result, state.completedAt) : null;
   const tags = figure.tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('');
   const dimensions = DIMENSIONS.map((dimension, i) => `
     <div class="dimension-row"><span class="dim-name">${dimension.name}</span><div class="dim-track" role="meter" aria-label="${dimension.name}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${scores[i]}"><div class="dim-fill" data-width="${scores[i]}"></div></div><span class="dim-value" data-number="${scores[i]}">0</span></div>`).join('');
   const keywords = top.slice(0, 3).map((item, i) => `<span><small>0${i + 1}</small>${DIMENSIONS[item.index].name}</span>`).join('');
+  const premiumBlock = unlocked ? `
+      <div class="premium-locked premium-complete">
+        <div class="premium-heading"><span class="premium-lock-mark" aria-hidden="true">✓</span><span>完整档案 · 已解锁</span></div>
+        <h2>✓ 完整人格档案权益已解锁</h2>
+        <p class="premium-lead">你的专属结果码已开放。复制后发送给小红书客服，即可获取完整 PDF。</p>
+        <p class="premium-length">完整人格档案 · 全文约 2000～3000 字</p>
+      </div>` : `
+      <div id="premium-locked" class="premium-locked">
+        <div class="premium-heading"><span class="premium-lock-mark" aria-hidden="true">锁</span><span>第二层 · 深度档案</span></div>
+        <h2>完整人格档案</h2>
+        <p class="premium-lead">基础结果已经呈现你的轮廓。完整档案会进一步展开你在关系、选择与压力中的真实模式。</p>
+        <p class="premium-length">完整人格档案 · 全文约 2000～3000 字</p>
+        <div class="premium-preview"><h3>你的关系模式</h3><p>你在人际关系里，并不总是依赖一时的情绪行动。你更在意一个人如何处理承诺、分歧与小事……</p><div class="preview-blur" aria-hidden="true">关系中的信任、冲突和边界，会在完整档案里逐层展开。</div><div class="preview-shade"><span aria-hidden="true">锁</span>关系模式｜约 300 字深度解析</div></div>
+        <div class="premium-preview-titles"><span>恋爱互动｜约 250 字</span><span>事业与团队位置｜约 300 字</span><span>压力下的真实反应｜约 250 字</span><span>金钱决策方式｜约 250 字</span><span>最大隐藏盲点｜约 250 字</span><span>成长方向｜约 300 字</span><span>三位历史人物深度匹配｜约 400 字</span></div>
+        <div class="premium-cta"><div><small>小红书完整人格档案</small><strong>¥${PremiumPayment.price.toFixed(1)}</strong></div><button class="button button-primary button-wide" id="premium-open" type="button">已购买完整档案？输入解锁码</button><p class="manual-purchase-note">尚未购买？请返回小红书购买完整人格档案。购买行为在小红书完成。</p></div>
+      </div>`;
+  const codeBlock = unlocked ? `
+      <div class="result-code-area" id="result-code-area"><h2>我的专属结果码</h2><p>✓ 完整人格档案权益已解锁</p><textarea id="result-code-value" readonly spellcheck="false" aria-label="我的专属结果码">${escapeHtml(state.resultCode)}</textarea><button class="button button-secondary button-wide" id="copy-result-code" type="button">复制我的完整结果码</button><p id="result-code-status" class="result-code-status" role="status" aria-live="polite"></p><p class="result-code-help">复制完整 LS1 结果码，发送给小红书客服，获取完整 PDF。</p></div>` : `
+      <div class="result-code-area result-code-locked" id="result-code-area"><h2>我的结果码</h2><div class="result-code-mask" aria-label="结果码尚未解锁">LS1-••••••••••••</div><p class="result-code-help">购买并验证 ¥3.9 完整人格档案解锁码后，这里才会显示可复制的完整结果码。</p></div>`;
   document.getElementById('result-content').innerHTML = `
     <div class="result-topline"><span>你的乱世人格匹配结果</span><button class="text-button" id="result-home-top" type="button">首页 ↗</button></div>
     <article class="result-hero">
@@ -375,24 +468,16 @@ function renderResult() {
       <p class="voice">“${escapeHtml(archetype.voice)}”</p><p class="voice-credit">「人格原型文案」</p>
     </article>
     <div class="archetype-ribbon"><span>你的乱世人格原型</span><strong>${archetype.id}</strong></div>
-    <section class="result-section"><h2><span class="section-num">01</span>人物自画像</h2><p>${escapeHtml(portrait)}</p><div class="strength-note"><strong>性格优势</strong><p>${escapeHtml(archetype.strength)}</p></div></section>
+    <section class="result-section"><h2><span class="section-num">01</span>基础人格分析</h2><p>${escapeHtml(basicAnalysis(data))}</p><div class="strength-note"><strong>性格优势</strong><p>${escapeHtml(archetype.strength)}</p></div></section>
     <section class="result-section"><h2><span class="section-num">02</span>八维能力结构</h2><p class="section-intro">没有高低优劣，只有你更常使用的策略。</p>${dimensions}</section>
     <section class="result-section"><h2><span class="section-num">03</span>你的三个核心关键词</h2><div class="keyword-strip">${keywords}</div></section>
     <div class="result-actions"><button class="button button-primary button-wide" id="share-button" type="button">生成分享卡 <span aria-hidden="true">↗</span></button><button class="button button-secondary button-wide" id="restart-button" type="button">重新测试</button><div class="result-small-actions"><button class="text-button" id="result-home" type="button">回到首页</button><button class="text-button" id="review-button" type="button" aria-expanded="false" aria-controls="answer-review">回看答案</button></div></div>
     <div id="answer-review" class="answer-review" hidden></div>
     <div id="share-panel" class="share-panel" hidden></div>
     <section id="premium-area" class="premium-area">
-      <div id="premium-locked" class="premium-locked">
-        <div class="premium-heading"><span class="premium-lock-mark" aria-hidden="true">锁</span><span>深度档案 · 专属版本</span></div>
-        <h2>完整人格档案</h2>
-        <p class="premium-lead">你看到的只是人格轮廓。<br>真正决定你如何选择、合作、爱人和面对压力的，藏在更深的一层。</p>
-        <p class="premium-length">完整人格档案 · 全文约 2000～3000 字</p>
-        <div class="premium-tags"><span>事业</span><span>关系</span><span>爱情</span><span>金钱</span><span>压力</span><span>盲点</span><span>成长</span><span>历史人物</span></div>
-        <div class="premium-preview"><h3>你的关系模式</h3><p>你在人际关系里，并不总是依赖一时的情绪行动。你更在意一个人如何处理承诺、分歧与小事……</p><div class="preview-blur" aria-hidden="true">关系中的信任、冲突和边界，会在完整档案里逐层展开。</div><div class="preview-shade"><span aria-hidden="true">锁</span>关系模式｜约 300 字深度解析</div></div>
-        <div class="premium-preview-titles"><span>恋爱互动模式｜约 250 字</span><span>事业与团队位置｜约 400 字</span><span>压力下的真实反应｜约 250 字</span><span>金钱决策方式｜约 250 字</span><span>最大隐藏盲点｜约 200 字</span><span>成长方向｜约 200 字</span><span>历史人物深度匹配｜约 350 字</span></div>
-        <div class="premium-cta"><div><small>购买后提交专属结果码</small><strong>¥${PremiumPayment.price.toFixed(1)}</strong></div><button class="button button-primary button-wide" id="premium-open" type="button">获取完整人格档案</button><p class="manual-purchase-note">购买后提交你的专属结果码，即可生成完整报告。购买与成交在小红书平台完成。</p></div>
-      </div>
-      <div class="result-code-area" id="result-code-area"><h2>我的结果码</h2><p>你的结果码</p><textarea id="result-code-value" readonly spellcheck="false" aria-label="你的结果码">${escapeHtml(resultCode)}</textarea><button class="button button-secondary button-wide" id="copy-result-code" type="button">复制结果码</button><p id="result-code-status" class="result-code-status" role="status" aria-live="polite"></p><p class="result-code-help">购买完整人格档案后，将此结果码提交给卖家，即可生成你的专属报告。</p><p class="result-code-caution">请勿自行修改结果码，否则可能无法识别。结果码用于传递测试结果，并非加密或付款凭据。</p></div>
+      ${premiumBlock}
+      ${codeBlock}
+      <div class="premium-steps"><h3>获取完整报告只需要4步</h3><ol><li><span>①</span>在小红书购买完整人格档案</li><li><span>②</span>输入订单中收到的6位档案解锁码</li><li><span>③</span>复制你的专属结果码</li><li><span>④</span>将结果码发送给客服，获取完整 PDF</li></ol></div>
     </section>
     <p class="disclaimer result-note">本测试仅供娱乐与自我观察，不属于专业心理评估。人物八维值是本测试内部的叙事参数，不是真实历史人物的心理测量数据；匹配度仅表示原型类比。</p>`;
   document.getElementById('result-home-top').addEventListener('click', goHome);
@@ -408,8 +493,8 @@ function renderResult() {
     }
   });
   document.getElementById('share-button').addEventListener('click', () => renderShareCard(data));
-  document.getElementById('premium-open').addEventListener('click', () => document.getElementById('result-code-area').scrollIntoView({ behavior:'smooth', block:'start' }));
-  document.getElementById('copy-result-code').addEventListener('click', copyResultCode);
+  document.getElementById('premium-open')?.addEventListener('click', openUnlockDialog);
+  document.getElementById('copy-result-code')?.addEventListener('click', copyResultCode);
   animateNumbers();
   requestAnimationFrame(() => document.querySelectorAll('.dim-fill').forEach(el => { el.style.width = `${el.dataset.width}%`; }));
 }
@@ -481,6 +566,12 @@ document.getElementById('start-button').addEventListener('click', startNew);
 document.getElementById('resume-button').addEventListener('click', () => { renderQuestion(); navigate('quiz'); });
 document.getElementById('saved-result-button').addEventListener('click', () => { renderResult(); navigate('result'); });
 document.getElementById('quiz-home-button').addEventListener('click', goHome);
+document.getElementById('premium-unlock-form').addEventListener('submit', unlockPremium);
+document.getElementById('premium-unlock-close').addEventListener('click', closeUnlockDialog);
+document.getElementById('premium-unlock-backdrop').addEventListener('click', closeUnlockDialog);
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !document.getElementById('premium-unlock-dialog').hidden) closeUnlockDialog();
+});
 document.getElementById('previous-button').addEventListener('click', () => {
   if (state.locked || state.currentIndex === 0) return;
   state.currentIndex--;
